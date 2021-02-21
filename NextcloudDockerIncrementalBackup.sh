@@ -6,6 +6,11 @@
 # Prerequesites:
 # sudo apt install docker borgbackup moreutils
 
+# TODO: Path to the docker cli binary
+dockerBinaryPath="/snap/bin"
+# configure runtime environment for cron, append path to docker binary
+export PATH=$PATH:$dockerBinaryPath
+
 # TODO: The name of the nextcloud container
 nextcloudDockerContainerName='nextcloud'
 
