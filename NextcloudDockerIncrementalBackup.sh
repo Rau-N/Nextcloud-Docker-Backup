@@ -7,7 +7,7 @@
 # sudo apt install docker borgbackup moreutils
 
 # TODO: Path to the docker cli binary
-dockerBinaryPath="/snap/bin"
+dockerBinaryPath="/usr/bin"
 # configure runtime environment for cron, append path to docker binary
 export PATH=$PATH:$dockerBinaryPath
 
@@ -18,7 +18,7 @@ nextcloudDockerContainerName='nextcloud'
 nextcloudDatabaseDockerContainerName='nextcloud-mariadb'
 
 # TODO: The parent directory of your Nextcloud bind mounts
-nextcloudBindMountDir='/home/docker/nextcloud'
+nextcloudBindMountDir='/applications/nextcloud'
 
 # TODO: The directory of your Nextcloud data directory (outside the Nextcloud file directory)
 # If your data directory is located under Nextcloud's file directory (somewhere in the web root), the data directory should not be a separate part of the backup
@@ -50,15 +50,19 @@ dbPassword=''
 
 # TODO: Set the path of the backup destination.
 # e.g. backupDestination="/media/nextcloud-backup"
-backupDestination="/share/docker-backup/nextcloud/borg"
+backupDestination="/share/docker-backup/nextcloud"
 
 # TODO: Set the name of the backup repository.
 # e.g. repository="borgbackups"
-repository=""
+repository="borg"
 
 # TODO: Set a list of all directories to backup
 # e.g. backup="/home/nils/pictures /home/nils/videos --exclude *.tmp"
 backup="$nextcloudBindMountDir $nextcloudDbDumpDir"
+
+# TODO: Exclude path from backup
+# If you want to exclude more than one path from the backup you need to add an additional --exclude parameter for each path (e.g. --exclude /path/a/ --exclude /path/b/)
+excludedPath="/applications/nextcloud/db"
 
 # TODO: Set the encryption type
 # e.g. encryption="repokey-blake2"
@@ -117,6 +121,11 @@ then
         exit 1
 fi
 
+# create parent directory of borg repository directory
+if [ ! -d "$backupDestination" ]; then
+  mkdir -p $backupDestination
+fi
+
 # Init borg-repo if absent
 if [ ! -d "$repoPath" ]; then
   borg init --encryption=$encryption $repoPath
@@ -148,11 +157,23 @@ echo
 #
 # Backup DB
 #
-if [ "${databaseSystem,,}" = "mysql" ] || [ "${databaseSystem,,}" = "mariadb" ]; then
-        echo "Creating Nextcloud database dump (MySQL/MariaDB)..."
+if [ "${databaseSystem,,}" = "mariadb" ]; then
+        echo "Creating Nextcloud database dump (MariaDB)..."
+
+        if ! [ "$(docker exec "${nextcloudDatabaseDockerContainerName}" bash -c "command -v mariadb-dump")" ]; then
+                errorecho "ERROR: MariaDB not installed (command mariadb-dump not found)."
+                errorecho "ERROR: No backup of database possible!"
+        else
+                docker exec "${nextcloudDatabaseDockerContainerName}" mariadb-dump -u "${dbUser}"  --password="${dbPassword}" "${nextcloudDatabase}" > "${nextcloudDbDumpDir}/${fileNameBackupDb}"
+        fi
+
+        echo "Done"
+        echo
+elif [ "${databaseSystem,,}" = "mysql" ]; then
+        echo "Creating Nextcloud database dump (MySQL)..."
 
         if ! [ "$(docker exec "${nextcloudDatabaseDockerContainerName}" bash -c "command -v mysqldump")" ]; then
-                errorecho "ERROR: MySQL/MariaDB not installed (command mysqldump not found)."
+                errorecho "ERROR: MySQL not installed (command mysqldump not found)."
                 errorecho "ERROR: No backup of database possible!"
         else
 		docker exec "${nextcloudDatabaseDockerContainerName}" mysqldump -u "${dbUser}"  --password="${dbPassword}" "${nextcloudDatabase}" > "${nextcloudDbDumpDir}/${fileNameBackupDb}"
@@ -178,7 +199,7 @@ fi
 SECONDS=0
 echo "Start of backup $(date)."
 
-borg create --compression $compression --exclude-caches --one-file-system -v --stats --progress \
+borg create --compression $compression --exclude $excludedPath --exclude-caches --one-file-system -v --stats --progress \
             $repoPath::'{hostname}-{now:%Y-%m-%d-%H%M%S}' $backup
 
 echo "End of backup $(date). Duration: $SECONDS seconds"
