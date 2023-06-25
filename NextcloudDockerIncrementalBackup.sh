@@ -4,12 +4,24 @@
 # E-mail: nrau1990@gmail.com
 # https://borgbackup.readthedocs.io/en/stable/
 # Prerequesites:
-# sudo apt install docker borgbackup moreutils
+# sudo apt install docker borgbackup moreutils ssmtp
 
 # TODO: Path to the docker cli binary
 dockerBinaryPath="/usr/bin"
 # configure runtime environment for cron, append path to docker binary
 export PATH=$PATH:$dockerBinaryPath
+
+# TODO: enable(1) or disable(0) sending emails using ssmtp (configuration in /etc/ssmtp/ssmtp.conf required)
+sendMails=0
+
+# TODO: Full name of mail sender
+mailFromFullName="Nextcloud Server"
+
+# TODO: Recipient mail address
+mailRecipient="test@example.com"
+
+# TODO: Mail subject
+mailSubject="Nextcloud Backup Report"
 
 # TODO: The name of the nextcloud container
 nextcloudDockerContainerName='nextcloud'
@@ -86,65 +98,104 @@ repoPath="$backupDestination"/"$repository"
 
 ###################################################################################################
 
+mailLogFile() {
+    if [ $sendMails -eq 1 ]; then
+    	local LogDir="$1"
+    	local LogFileName="$2"
+    	local RecipientEmail="$3"
+    	local Subject="$4"
+
+    	# Check if the log file exists
+    	local LogFilePath="${LogDir}/${LogFileName}"
+    	if [[ ! -f "$LogFilePath" ]]; then
+        	echo "Log file '$LogFilePath' does not exist."
+        	return 1
+    	fi
+
+    	# Read the log file content
+    	local LogContent
+    	LogContent=$(cat "$LogFilePath")
+
+    	# Prepare the email content
+    	local EmailContent
+    	EmailContent="Subject: $Subject\n\n$LogContent"
+
+    	# Send the log content via email
+    	echo -e "$EmailContent" | ssmtp -F "$mailFromFullName" "$RecipientEmail"
+    	if [[ $? -eq 0 ]]; then
+        	echo "Log file sent successfully via email."
+        	return 0
+    	else
+        	echo "Failed to send log file via email."
+        	return 1
+    	fi
+    fi
+}
+
 # Function for error messages
 errorecho() { cat <<< "$@" 1>&2; }
 
+function EnableMaintenanceMode() {
+	echo "Set maintenance mode for Nextcloud..."
+	docker exec --user "${webserverUser}" "${nextcloudDockerContainerName}" php occ maintenance:mode --on
+	echo "Done"
+	echo
+}
+
+
 function DisableMaintenanceMode() {
-        echo "Switching off maintenance mode..."
-        docker exec --user "${webserverUser}" "${nextcloudDockerContainerName}" php occ maintenance:mode --off
-        echo "Done"
-        echo
+	echo "Switching off maintenance mode..."
+	docker exec --user "${webserverUser}" "${nextcloudDockerContainerName}" php occ maintenance:mode --off
+	echo "Done"
+	echo
 }
 
 # Capture CTRL+C
 trap CtrlC INT
 
 function CtrlC() {
-        read -p "Backup cancelled. Keep maintenance mode? [y/n] " -n 1 -r
-        echo
+	read -p "Backup cancelled. Keep maintenance mode? [y/n] " -n 1 -r
+	echo
 
-        if ! [[ $REPLY =~ ^[Yy]$ ]]
-        then
-                DisableMaintenanceMode
-        else
-                echo "Maintenance mode still enabled."
-        fi
+	if ! [[ $REPLY =~ ^[Yy]$ ]]
+	then
+		DisableMaintenanceMode
+	else
+		echo "Maintenance mode still enabled."
+	fi
 
-        exit 1
+	exit 1
 }
+
+mkdir -p $LogDir
+exec > >(ts | tee -i ${LogDir}/${LogFileName})
+exec 2>&1
 
 # Check for root
 #
 if [ "$(id -u)" != "0" ]
 then
-        errorecho "ERROR: This script has to be run as root!"
-        exit 1
+	errorecho "ERROR: This script has to be run as root!"
+	exit 1
 fi
 
 # create parent directory of borg repository directory
 if [ ! -d "$backupDestination" ]; then
-  mkdir -p $backupDestination
+	mkdir -p $backupDestination
 fi
 
 # Init borg-repo if absent
 if [ ! -d "$repoPath" ]; then
-  borg init --encryption=$encryption $repoPath
-  echo "Borg repository created in $repoPath"
+	borg init --encryption=$encryption $repoPath
+	echo "Borg repository created in $repoPath"
 fi
-
-mkdir -p $LogDir
-exec > >(ts | tee -i ${LogDir}/${LogFileName})
-exec 2>&1
 
 # create temporary dir for nextcloud database dump
 mkdir -p $nextcloudDbDumpDir
 
 # Set maintenance mode
 #
-echo "Set maintenance mode for Nextcloud..."
-docker exec --user "${webserverUser}" "${nextcloudDockerContainerName}" php occ maintenance:mode --on
-echo "Done"
-echo
+EnableMaintenanceMode
 
 #
 # Stop web server
@@ -154,56 +205,64 @@ docker exec --user "${webserverUser}" "${nextcloudDockerContainerName}" service 
 echo "Done"
 echo
 
+databaseDumpSuccessful=false
+
 #
 # Backup DB
 #
 if [ "${databaseSystem,,}" = "mariadb" ]; then
-        echo "Creating Nextcloud database dump (MariaDB)..."
+	echo "Creating Nextcloud database dump (MariaDB)..."
 
-        if ! [ "$(docker exec "${nextcloudDatabaseDockerContainerName}" bash -c "command -v mariadb-dump")" ]; then
-                errorecho "ERROR: MariaDB not installed (command mariadb-dump not found)."
-                errorecho "ERROR: No backup of database possible!"
-        else
-                docker exec "${nextcloudDatabaseDockerContainerName}" mariadb-dump -u "${dbUser}"  --password="${dbPassword}" "${nextcloudDatabase}" > "${nextcloudDbDumpDir}/${fileNameBackupDb}"
-        fi
+	if ! [ "$(docker exec "${nextcloudDatabaseDockerContainerName}" bash -c "command -v mariadb-dump")" ]; then
+		errorecho "ERROR: MariaDB not installed (command mariadb-dump not found)."
+		errorecho "ERROR: No backup of database possible!"
+	else
+		docker exec "${nextcloudDatabaseDockerContainerName}" mariadb-dump -u "${dbUser}"  --password="${dbPassword}" "${nextcloudDatabase}" > "${nextcloudDbDumpDir}/${fileNameBackupDb}"
+		databaseDumpSuccessful=true
+	fi
 
-        echo "Done"
-        echo
+	echo "Done"
+	echo
 elif [ "${databaseSystem,,}" = "mysql" ]; then
-        echo "Creating Nextcloud database dump (MySQL)..."
+	echo "Creating Nextcloud database dump (MySQL)..."
 
-        if ! [ "$(docker exec "${nextcloudDatabaseDockerContainerName}" bash -c "command -v mysqldump")" ]; then
-                errorecho "ERROR: MySQL not installed (command mysqldump not found)."
-                errorecho "ERROR: No backup of database possible!"
-        else
+	if ! [ "$(docker exec "${nextcloudDatabaseDockerContainerName}" bash -c "command -v mysqldump")" ]; then
+		errorecho "ERROR: MySQL not installed (command mysqldump not found)."
+		errorecho "ERROR: No backup of database possible!"
+
+	else
 		docker exec "${nextcloudDatabaseDockerContainerName}" mysqldump -u "${dbUser}"  --password="${dbPassword}" "${nextcloudDatabase}" > "${nextcloudDbDumpDir}/${fileNameBackupDb}"
-        fi
+		databaseDumpSuccessful=true
+	fi
 
-        echo "Done"
-        echo
+	echo "Done"
+	echo
 elif [ "${databaseSystem,,}" = "postgresql" ]; then
-        echo "Creating Nextcloud database dump (PostgreSQL)..."
+	echo "Creating Nextcloud database dump (PostgreSQL)..."
 
-        if ! [ "$(docker exec "${nextcloudDatabaseDockerContainerName}" bash -c "command -v pg_dump")" ]; then
-                errorecho "ERROR:PostgreSQL not installed (command pg_dump not found)."
-                errorecho "ERROR: No backup of database possible!"
-        else
+	if ! [ "$(docker exec "${nextcloudDatabaseDockerContainerName}" bash -c "command -v pg_dump")" ]; then
+		errorecho "ERROR:PostgreSQL not installed (command pg_dump not found)."
+		errorecho "ERROR: No backup of database possible!"
+	else
 		docker exec "${nextcloudDatabaseDockerContainerName}" bash -c "export PGPASSWORD="${dbPassword}" ; pg_dump "${nextcloudDatabase}" -U "${dbUser}"" > "${nextcloudDbDumpDir}/${fileNameBackupDb}"
-        fi
+		databaseDumpSuccessful=true
+	fi
 
-        echo "Done"
-        echo
+	echo "Done"
+	echo
 fi
 
-# backup data
-SECONDS=0
-echo "Start of backup $(date)."
+if [ "$databaseDumpSuccessful" == true ]; then
+	# backup data
+	SECONDS=0
+	echo "Start of backup $(date)."
 
-borg create --compression $compression --exclude $excludedPath --exclude-caches --one-file-system -v --stats --progress \
-            $repoPath::'{hostname}-{now:%Y-%m-%d-%H%M%S}' $backup
+	borg create --compression $compression --exclude $excludedPath --exclude-caches --one-file-system -v --stats --progress \
+        $repoPath::'{hostname}-{now:%Y-%m-%d-%H%M%S}' $backup
 
-echo "End of backup $(date). Duration: $SECONDS seconds"
-echo
+	echo "End of backup $(date). Duration: $SECONDS seconds"
+	echo
+fi
 
 # Delete temporary database dump file
 #
@@ -231,3 +290,6 @@ DisableMaintenanceMode
 
 # prune archives
 borg prune -v --list $repoPath --prefix '{hostname}-' $pruning
+
+# Report backup status via email
+mailLogFile "$LogDir" "$LogFileName" "$mailRecipient" "$mailSubject"
