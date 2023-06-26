@@ -8,8 +8,10 @@
 
 # TODO: Path to the docker cli binary
 dockerBinaryPath="/usr/bin"
-# configure runtime environment for cron, append path to docker binary
-export PATH=$PATH:$dockerBinaryPath
+# TODO: Path to the ssmtp binary
+ssmtpBinaryPath="/usr/sbin"
+# configure runtime environment for cron, append binary paths
+export PATH=$PATH:$dockerBinaryPath:$ssmtpBinaryPath
 
 # TODO: enable(1) or disable(0) sending emails using ssmtp (configuration in /etc/ssmtp/ssmtp.conf required)
 sendMails=0
