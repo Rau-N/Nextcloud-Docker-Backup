@@ -7,9 +7,9 @@
 # sudo apt install docker borgbackup moreutils ssmtp
 
 # TODO: Path to the docker cli binary
-dockerBinaryPath="/usr/bin"
+dockerBinaryPath='/usr/bin'
 # TODO: Path to the ssmtp binary
-ssmtpBinaryPath="/usr/sbin"
+ssmtpBinaryPath='/usr/sbin'
 # configure runtime environment for cron, append binary paths
 export PATH=$PATH:$dockerBinaryPath:$ssmtpBinaryPath
 
@@ -17,13 +17,13 @@ export PATH=$PATH:$dockerBinaryPath:$ssmtpBinaryPath
 sendMails=0
 
 # TODO: Full name of mail sender
-mailFromFullName="Nextcloud Server"
+mailFromFullName='Nextcloud Server'
 
 # TODO: Recipient mail address
-mailRecipient="test@example.com"
+mailRecipient='test@example.com'
 
 # TODO: Mail subject
-mailSubject="Nextcloud Backup Report"
+mailSubject='Nextcloud Backup'
 
 # TODO: The name of the nextcloud container
 nextcloudDockerContainerName='nextcloud'
@@ -42,7 +42,7 @@ nextcloudDataDir=''
 nextcloudDbDumpDir='/tmp/nextcloud_database_dump'
 
 # TODO: The name of the temporary nextcloud database dump
-fileNameBackupDb="nextcloud-db.sql"
+fileNameBackupDb='nextcloud-db.sql'
 
 # TODO: The service name of the web server. Used to start/stop web server (e.g. 'systemctl start <webserverServiceName>')
 webserverServiceName='apache2'
@@ -64,11 +64,11 @@ dbPassword=''
 
 # TODO: Set the path of the backup destination.
 # e.g. backupDestination="/media/nextcloud-backup"
-backupDestination="/share/docker-backup/nextcloud"
+backupDestination='/share/docker-backup/nextcloud'
 
 # TODO: Set the name of the backup repository.
 # e.g. repository="borgbackups"
-repository="borg"
+repository='borg'
 
 # TODO: Set a list of all directories to backup
 # e.g. backup="/home/nils/pictures /home/nils/videos --exclude *.tmp"
@@ -76,23 +76,23 @@ backup="$nextcloudBindMountDir $nextcloudDbDumpDir"
 
 # TODO: Exclude path from backup
 # If you want to exclude more than one path from the backup you need to add an additional --exclude parameter for each path (e.g. --exclude /path/a/ --exclude /path/b/)
-excludedPath="/applications/nextcloud/db"
+excludedPath='/applications/nextcloud/db'
 
 # TODO: Set the encryption type
 # e.g. encryption="repokey-blake2"
 # e.g. encryption="none"
-encryption="none"
+encryption='none'
 
 # TODO: Set the compression type
 # e.g. compression="none"
-compression="lz4"
+compression='lz4'
 
 # TODO: Set the pruning scheme
 # This template keeps all backups of the current day, 
 # additionally the current archive of the last 7 backup days, 
 # the current archive of the last 4 weeks 
 # and the current archive of the last 3 months
-pruning="--keep-within=1d --keep-daily=7 --keep-weekly=4 --keep-monthly=3"
+pruning='--keep-within=1d --keep-daily=7 --keep-weekly=4 --keep-monthly=3'
 
 LogDir="$backupDestination/log"
 LogFileName="borg_backup_$(date +"%Y%m%d_%H%M%S").log"
@@ -106,6 +106,7 @@ mailLogFile() {
     	local LogFileName="$2"
     	local RecipientEmail="$3"
     	local Subject="$4"
+	local backupSuccessful="$5"
 
     	# Check if the log file exists
     	local LogFilePath="${LogDir}/${LogFileName}"
@@ -113,6 +114,12 @@ mailLogFile() {
         	echo "Log file '$LogFilePath' does not exist."
         	return 1
     	fi
+
+		if [ "$backupSuccessful" == true ]; then
+			Subject="${Subject} [Success]"
+		else
+			Subject="${Subject} [Failed]"
+		fi
 
     	# Read the log file content
     	local LogContent
@@ -208,6 +215,7 @@ echo "Done"
 echo
 
 databaseDumpSuccessful=false
+backupSuccessful=false
 
 #
 # Backup DB
@@ -254,6 +262,8 @@ elif [ "${databaseSystem,,}" = "postgresql" ]; then
 	echo
 fi
 
+
+
 if [ "$databaseDumpSuccessful" == true ]; then
 	# backup data
 	SECONDS=0
@@ -261,7 +271,9 @@ if [ "$databaseDumpSuccessful" == true ]; then
 
 	borg create --compression $compression --exclude $excludedPath --exclude-caches --one-file-system -v --stats --progress \
         $repoPath::'{hostname}-{now:%Y-%m-%d-%H%M%S}' $backup
-
+	if [[ $? -ne 2 ]]; then
+		backupSuccessful=true
+	fi
 	echo "End of backup $(date). Duration: $SECONDS seconds"
 	echo
 fi
@@ -294,4 +306,5 @@ DisableMaintenanceMode
 borg prune -v --list $repoPath --prefix '{hostname}-' $pruning
 
 # Report backup status via email
-mailLogFile "$LogDir" "$LogFileName" "$mailRecipient" "$mailSubject"
+mailLogFile "$LogDir" "$LogFileName" "$mailRecipient" "$mailSubject" "$backupSuccessful"
+
